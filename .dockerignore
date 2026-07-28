@@ -1,0 +1,33 @@
+# Build output and local caches
+.gradle/
+build/
+bin/
+out/
+
+# VCS and CI
+.git/
+.github/
+.gitignore
+
+# Local secrets and env files — must never reach the build context
+.env
+*.env
+!.env.example
+
+# Infrastructure and docs are not needed to build the app image
+infrastructure/
+*.md
+LICENSE
+
+# IDE noise
+.idea/
+*.iml
+*.iws
+*.ipr
+.settings/
+.classpath
+.project
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
