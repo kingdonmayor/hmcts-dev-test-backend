@@ -145,7 +145,7 @@ jobs:
       # IaC misconfiguration scanning (public network exposure, missing TLS,
       # unencrypted storage). Advisory for now - see README trade-offs.
       - name: Trivy config scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           scan-type: config
@@ -209,7 +209,7 @@ jobs:
 
       # HIGH findings are reported and surfaced in the Security tab, but do not break the build
       - name: Trivy scan (HIGH - warning only)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.scan-target.outputs.image }}
           format: sarif
@@ -227,7 +227,7 @@ jobs:
 
       # CRITICAL findings are a hard stop: the image is never pushed.
       - name: Trivy scan (CRITICAL - blocking)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.scan-target.outputs.image }}
           format: table
