@@ -1,5 +1,4 @@
 # HMCTS Dev Test Backend
-# HMCTS Dev Test Backend
 
 A Spring Boot service for tracking caseworker cases, wired up to PostgreSQL, packaged as a
 container, built and scanned by GitHub Actions, and deployed to Azure Container Apps with
