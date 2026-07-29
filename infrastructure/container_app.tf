@@ -21,7 +21,6 @@ resource "azurerm_container_app_environment" "this" {
   location                   = azurerm_resource_group.this.location
   resource_group_name        = azurerm_resource_group.this.name
   log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id
-  zone_redundancy_enabled    = false
   tags                       = local.common_tags
 }
 
