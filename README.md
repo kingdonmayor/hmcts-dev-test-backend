@@ -27,7 +27,7 @@ image builds the jar inside itself.
 On Windows, use Git Bash or WSL rather than PowerShell the commands below assume a POSIX shell.
 
 ---
-
+Clone the project repo to your Local
 ## 1. Run it with Docker Compose
 
 This is the quickest path to a working service. Copy the example environment file, set a password,
