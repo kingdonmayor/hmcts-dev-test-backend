@@ -7,7 +7,7 @@ resource "azurerm_key_vault" "this" {
 
   # RBAC rather than legacy access policies: role assignments are auditable and
   # manageable with the same tooling as the rest of the estate.
-  enable_rbac_authorization = true
+  rbac_authorization_enabled = true
 
   # A vault holding production credentials must not be recoverable by accident
   # nor quickly destroyable.
