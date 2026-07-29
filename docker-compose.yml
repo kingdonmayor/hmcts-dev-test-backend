@@ -1,0 +1,65 @@
+# Local development stack: the Spring Boot service plus its PostgreSQL database.
+# All credentials are read from the git-ignored .env file.
+
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: hmcts-dev-test-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:?DB_NAME must be set in .env}
+      POSTGRES_USER: ${DB_USER_NAME:?DB_USER_NAME must be set in .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+    ports:
+      # Exposed on localhost only, for psql/IDE access during development.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - backend
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hmcts/test-backend:local
+    container_name: hmcts-dev-test-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        # The app starts with a reachable datasource,it waits for the database healthcheck.
+        condition: service_healthy
+    environment:
+      SERVER_PORT: ${SERVER_PORT:-4000}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:?DB_NAME must be set in .env}
+      DB_USER_NAME: ${DB_USER_NAME:?DB_USER_NAME must be set in .env}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+      DB_OPTIONS: ${DB_OPTIONS:-}
+    ports:
+      - "${SERVER_PORT:-4000}:4000"
+    healthcheck:
+      # Hits the actuator health endpoint, a healthy container also proves database connectivity.
+      test:
+        ["CMD", "curl", "--fail", "--silent", "http://localhost:4000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - backend
+
+volumes:
+  db-data:
+
+networks:
+  backend:
+    driver: bridge

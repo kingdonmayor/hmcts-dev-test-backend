@@ -4,8 +4,13 @@ A Spring Boot service for tracking caseworker cases, wired up to PostgreSQL, pac
 container, built and scanned by GitHub Actions, and deployed to Azure Container Apps with
 Terraform.
 
-This is a README about getting it running on your machine and the reasoning behind
-the design decisions, that's further down under
+ — database wiring and containerisation → [`application.yaml`](src/main/resources/application.yaml), [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml).
+ 
+ — CI/CD pipeline → [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+ 
+ — infrastructure as code → [`infrastructure/`](infrastructure).
+
+This is a README about getting it running on your machine and the reasoning behind the design decisions, that's further down under
 
 ## What you'll need
 

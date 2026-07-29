@@ -1,22 +1,275 @@
-name: Template CI
+name: CI/CD
 
+# Feature branches and PRs run every quality gate but never publish an image.
+# Pushes to the default branch additionally publish an immutable image to GHCR.
+# Tags matching v*.*.* publish a semver-tagged release image.
 on:
-  pull_request:
-    branches:
-      - master
   push:
     branches:
+      - main
       - master
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the in-flight run, except on the
+# default branch where every commit should produce a published artefact.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_name != 'main' && github.ref_name != 'master' }}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  JAVA_VERSION: "21"
+  TERRAFORM_VERSION: "1.9.8"
+  TERRAFORM_DIR: infrastructure
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  # ---------------------------------------------------------------------------
+  # Gate 1 - static analysis runs first and independently
+  # of the test suite: a Checkstyle failure and no long test run.
+  # ---------------------------------------------------------------------------
+  static-analysis:
+    name: Static analysis (Checkstyle)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v5
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
         with:
-          distribution: 'temurin' # See 'Supported distributions' for available options
-          java-version: '17'
-          cache: 'gradle'
-      - name: Build
-        run: ./gradlew check
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Checkstyle is wired in by the uk.gov.hmcts.java plugin; these tasks make
+      # it an explicit, independently reportable pipeline stage.
+      - name: Run Checkstyle
+        run: ./gradlew --no-daemon checkstyleMain checkstyleTest checkstyleIntegrationTest checkstyleFunctionalTest checkstyleSmokeTest
+
+      - name: Publish Checkstyle reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkstyle-reports
+          path: build/reports/checkstyle/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Gate 2 - compile and test. check runs unit plus integration tests and JaCoCo.
+  # ---------------------------------------------------------------------------
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build and run tests
+        run: ./gradlew --no-daemon build
+
+      - name: Generate coverage report
+        if: always()
+        run: ./gradlew --no-daemon jacocoTestReport
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            build/reports/tests/
+            build/test-results/
+            build/reports/jacoco/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # The jar is not reused by the image build, but it is kept
+      # for debugging a failed run.
+      - name: Publish application jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-jar
+          path: build/libs/test-backend.jar
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Gate 3 - infrastructure code. Runs in parallel with the JVM jobs
+  # ---------------------------------------------------------------------------
+  terraform:
+    name: Terraform checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.TERRAFORM_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      # -backend=false: no remote state and no credentials needed, but providers
+      # and modules are still downloaded so `validate` can check the schema.
+      - name: Terraform init
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate
+        run: terraform validate -no-color
+
+      # IaC misconfiguration scanning (public network exposure, missing TLS,
+      # unencrypted storage). Advisory for now - see README trade-offs.
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: config
+          scan-ref: ${{ env.TERRAFORM_DIR }}
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
+  # ---------------------------------------------------------------------------
+  # Gate 4 - container image. Built on every branch so packaging problems are
+  # caught on the feature branch, scanned before it can ever be pushed, and only
+  # published from the default branch or a version tag.
+  # ---------------------------------------------------------------------------
+  image:
+    name: Build, scan and publish image
+    runs-on: ubuntu-latest
+    needs: [static-analysis, build-and-test, terraform]
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Tagging strategy (rationale in README):
+      #   sha-<short sha>  every build, immutable, the tag deployments pin to
+      #   <branch>-<run#>  human-readable traceability back to a pipeline run
+      #   <semver>         only for v*.*.* tags, for releases
+      #   latest           only for the default branch
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch,suffix=-${{ github.run_number }}
+            type=ref,event=pr,prefix=pr-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Built and loaded locally first so the scanner sees the exact artefact
+      # that would be published and nothing is pushed before it passes the scan.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Resolve scan target
+        id: scan-target
+        run: echo "image=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)" >> "$GITHUB_OUTPUT"
+
+      # HIGH findings are reported and surfaced in the Security tab, but do not break the build
+      - name: Trivy scan (HIGH - warning only)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.scan-target.outputs.image }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Upload Trivy results to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+
+      # CRITICAL findings are a hard stop: the image is never pushed.
+      - name: Trivy scan (CRITICAL - blocking)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.scan-target.outputs.image }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && (github.ref_name == 'main' || github.ref_name == 'master' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Re-runs the build against the layer cache
+      - name: Push image
+        if: github.event_name != 'pull_request' && (github.ref_name == 'main' || github.ref_name == 'master' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+  # ---------------------------------------------------------------------------
+  # Single required status check for branch protection: green only when every gate above succeeded
+  # ---------------------------------------------------------------------------
+  pipeline-gate:
+    name: Pipeline gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [static-analysis, build-and-test, terraform, image]
+    steps:
+      - name: Check gate results
+        run: |
+          echo "static-analysis: ${{ needs.static-analysis.result }}"
+          echo "build-and-test:  ${{ needs.build-and-test.result }}"
+          echo "terraform:       ${{ needs.terraform.result }}"
+          echo "image:           ${{ needs.image.result }}"
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "::error::One or more pipeline gates failed."
+            exit 1
+          fi
